@@ -10,7 +10,7 @@ The first workflow is a Z.ai-backed PR reviewer built around
 Caller repositories should add a small workflow that calls:
 
 ```yaml
-uses: midagedev/review-actions/.github/workflows/zai-pr-review.yml@main
+uses: midagedev/review-actions/.github/workflows/zai-pr-review.yml@v1
 ```
 
 Required caller secret:
@@ -63,7 +63,7 @@ unset ZAI_API_KEY
 
 - Use the caller workflow in each repository, not a copy of the central reusable
   workflow.
-- Keep the central workflow pinned from callers with a stable ref once tags are
-  created, for example `@v1`.
+- Keep the central workflow pinned from callers with a stable ref, for example
+  `@v1`.
 - For public repositories, avoid `pull_request_target` unless the workflow is
   explicitly hardened for untrusted code.
