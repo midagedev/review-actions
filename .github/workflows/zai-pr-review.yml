@@ -1,0 +1,156 @@
+name: Z.ai PR Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to review.
+        required: true
+        type: string
+      prompt_path:
+        description: Repository-local review prompt path.
+        required: false
+        type: string
+        default: .github/zai-review-prompt.md
+      model:
+        description: Z.ai model mapped to Claude Code Sonnet/Opus defaults.
+        required: false
+        type: string
+        default: glm-4.7
+      haiku_model:
+        description: Z.ai model mapped to Claude Code Haiku default.
+        required: false
+        type: string
+        default: glm-4.5-air
+      runner_labels:
+        description: JSON array of runner labels.
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      api_timeout_ms:
+        description: API timeout for long reviews.
+        required: false
+        type: string
+        default: "3000000"
+      allowed_tools:
+        description: Claude Code allowed tools for static PR review.
+        required: false
+        type: string
+        default: Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(cat:*),Bash(sed:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(find:*),Read,Write,Grep,Glob
+    secrets:
+      ZAI_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    env:
+      ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ZAI_API_KEY }}
+      API_TIMEOUT_MS: ${{ inputs.api_timeout_ms }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      PROMPT_PATH: ${{ inputs.prompt_path }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build review prompt
+        id: prompt
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/zai-review
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json number,baseRefName,headRefOid,title,body,author,url \
+            > /tmp/zai-review/pr.json
+
+          HEAD_SHA="$(jq -r '.headRefOid' /tmp/zai-review/pr.json)"
+          BASE_REF="$(jq -r '.baseRefName' /tmp/zai-review/pr.json)"
+          PR_URL="$(jq -r '.url' /tmp/zai-review/pr.json)"
+
+          cat > /tmp/zai-review/default-prompt.md <<'PROMPT_EOF'
+          You are a senior software engineer reviewing this pull request.
+
+          Review priorities:
+
+          1. Correctness bugs, regressions, data loss, security issues, and operational risk.
+          2. Missing or weak tests for changed behavior.
+          3. Violations of repository instructions such as AGENTS.md, CLAUDE.md, specs, or design docs.
+          4. Avoidable complexity, duplication, or unclear intent.
+
+          Before judging, read repository-local instructions when present:
+
+          - AGENTS.md
+          - CLAUDE.md
+          - README.md
+          - relevant files under docs/ or specs/
+
+          Do not request changes for style issues that formatters or linters would catch.
+          Do not review unchanged code unless it is necessary to explain a changed-code bug.
+
+          Use REQUEST_CHANGES only for blocking issues. If there are no blocking issues,
+          APPROVE and include non-blocking suggestions separately.
+          PROMPT_EOF
+
+          if [ -f "$PROMPT_PATH" ]; then
+            REVIEW_PROMPT="$PROMPT_PATH"
+          else
+            REVIEW_PROMPT="/tmp/zai-review/default-prompt.md"
+          fi
+
+          DELIM="ZAI_REVIEW_PROMPT_$(date +%s%N)"
+          {
+            echo "prompt<<$DELIM"
+            echo "## Review target"
+            echo ""
+            echo "- Repository: $REPO"
+            echo "- PR number: $PR_NUMBER"
+            echo "- PR URL: $PR_URL"
+            echo "- Base ref: $BASE_REF"
+            echo "- Head SHA: $HEAD_SHA"
+            echo ""
+            echo "All GitHub CLI commands must pass the PR number explicitly."
+            echo "Examples:"
+            echo ""
+            echo "- \`gh pr view $PR_NUMBER --repo $REPO --json ...\`"
+            echo "- \`gh pr diff $PR_NUMBER --repo $REPO\`"
+            echo "- \`gh pr review $PR_NUMBER --repo $REPO --approve --body-file /tmp/claude-review.md\`"
+            echo ""
+            echo "The checkout can be detached, so do not rely on implicit current-branch PR lookup."
+            echo ""
+            echo "## Repository review prompt"
+            echo ""
+            cat "$REVIEW_PROMPT"
+            echo ""
+            echo "## Required final action"
+            echo ""
+            echo "Write the review body to /tmp/claude-review.md and submit exactly one GitHub PR review."
+            echo "Do not use gh pr comment for the final result."
+            echo ""
+            echo "- No blocking issue: \`gh pr review $PR_NUMBER --repo $REPO --approve --body-file /tmp/claude-review.md\`"
+            echo "- Blocking issue: \`gh pr review $PR_NUMBER --repo $REPO --request-changes --body-file /tmp/claude-review.md\`"
+            echo ""
+            echo "The first line of the body must be:"
+            echo "\`<!-- zai-glm-review head_sha=$HEAD_SHA -->\`"
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Z.ai review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ZAI_API_KEY }}
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          show_full_output: true
+          claude_args: >-
+            --allowed-tools "${{ inputs.allowed_tools }}"
