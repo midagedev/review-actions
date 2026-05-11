@@ -30,6 +30,32 @@ For public repositories, only run the automatic PR trigger for same-repository
 branches. Use `workflow_dispatch` for external fork PRs after reviewing the
 risk.
 
+## Forbidden Keyword Scan
+
+Use this action when a public or reusable project must block private service
+names, customer names, or other repository-specific terms without committing
+those terms to the repository.
+
+Caller repositories should add a step after checkout:
+
+```yaml
+- uses: midagedev/review-actions/forbidden-keyword-scan@v1
+  with:
+    keywords: ${{ secrets.FORBIDDEN_KEYWORDS }}
+    fail-on-empty: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+```
+
+Required caller secret:
+
+- `FORBIDDEN_KEYWORDS`: newline or comma separated keywords to block.
+
+The action scans tracked text files with `git ls-files`, ignores common build
+and private-output paths by default, reports only file and line locations, and
+does not print the matched keyword.
+
+Use `examples/forbidden-keyword-scan.yml` as a standalone workflow, or add the
+step to an existing CI workflow.
+
 ## Install In A Repository
 
 Copy `examples/zai-review.yml` into the target repository as:
