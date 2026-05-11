@@ -1,0 +1,31 @@
+name: Forbidden keyword scan
+description: Scan tracked repository files for private or repository-specific forbidden keywords without printing the matched keywords.
+
+inputs:
+  keywords:
+    description: Newline or comma separated keywords to block.
+    required: false
+    default: ""
+  fail-on-empty:
+    description: Fail when keywords is empty. Set false for workflows where secrets are unavailable, such as untrusted fork PRs.
+    required: false
+    default: "true"
+  excludes:
+    description: Newline separated git pathspecs to exclude from the tracked-file scan.
+    required: false
+    default: |
+      dist/**
+      node_modules/**
+      .private/**
+      *.log
+
+runs:
+  using: composite
+  steps:
+    - name: Scan tracked files
+      shell: bash
+      env:
+        REVIEW_ACTIONS_FORBIDDEN_KEYWORDS: ${{ inputs.keywords }}
+        REVIEW_ACTIONS_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
+        REVIEW_ACTIONS_EXCLUDES: ${{ inputs.excludes }}
+      run: bash "$GITHUB_ACTION_PATH/check-forbidden-keywords.sh"
