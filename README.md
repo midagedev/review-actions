@@ -49,9 +49,9 @@ Required caller secret:
 
 - `FORBIDDEN_KEYWORDS`: newline or comma separated keywords to block.
 
-The action scans tracked text files with `git ls-files`, ignores common build
-and private-output paths by default, reports only file and line locations, and
-does not print the matched keyword.
+The action scans tracked text files with `git ls-files`, ignores common build,
+dependency, test-output, and private-output paths by default, reports only file
+and line locations, and does not print the matched keyword.
 
 Use `examples/forbidden-keyword-scan.yml` as a standalone workflow, or add the
 step to an existing CI workflow.

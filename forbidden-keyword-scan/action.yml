@@ -15,8 +15,17 @@ inputs:
     required: false
     default: |
       dist/**
+      **/dist/**
+      build/**
+      **/build/**
+      coverage/**
+      **/coverage/**
       node_modules/**
+      **/node_modules/**
       .private/**
+      **/.private/**
+      test-results/**
+      **/test-results/**
       *.log
 
 runs:
