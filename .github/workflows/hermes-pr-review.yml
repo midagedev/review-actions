@@ -340,7 +340,12 @@ jobs:
           if len(lines) == 1 or lines[1].strip().upper() not in {"APPROVE", "REQUEST_CHANGES"}:
               body = lines[0] + "\n" + verdict + "\n" + "\n".join(lines[1:]).lstrip()
 
-          body = body.replace("Reviewed by Z.ai GLM via Claude Code Action", "Reviewed by Hermes via OpenAI Codex")
+          body = re.sub(
+              r"\n*<sub>Reviewed by Z\.ai[^<]*</sub>\s*",
+              "\n",
+              body,
+              flags=re.IGNORECASE,
+          )
           if "Reviewed by Hermes via OpenAI Codex" not in body:
               body = body.rstrip() + "\n\n<sub>Reviewed by Hermes via OpenAI Codex</sub>\n"
 
