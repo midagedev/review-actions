@@ -1,0 +1,358 @@
+name: Hermes PR Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to review.
+        required: true
+        type: string
+      prompt_path:
+        description: Repository-local review prompt path.
+        required: false
+        type: string
+        default: .github/hermes-review-prompt.md
+      model:
+        description: Codex model exposed by the Hermes/OpenAI Codex account.
+        required: false
+        type: string
+        default: gpt-5.4-mini
+      runner_labels:
+        description: JSON array of self-hosted runner labels.
+        required: false
+        type: string
+        default: '["self-hosted","vps-hermes"]'
+      hermes_python:
+        description: Python interpreter from the VPS Hermes installation.
+        required: false
+        type: string
+        default: /home/midagedev/.hermes/hermes-agent/venv/bin/python
+      hermes_agent_path:
+        description: Hermes Agent checkout path on the VPS runner.
+        required: false
+        type: string
+        default: /home/midagedev/.hermes/hermes-agent
+      max_diff_bytes:
+        description: Maximum PR diff bytes sent to the reviewer prompt.
+        required: false
+        type: string
+        default: "180000"
+      context_paths:
+        description: Newline or comma separated repository context files to include when present.
+        required: false
+        type: string
+        default: |
+          AGENTS.md
+          CLAUDE.md
+          README.md
+          .specify/memory/constitution.md
+          docs/FINAL_GOAL.md
+          docs/AGENT_ORCHESTRATION.md
+          specs/000-product/spec.md
+          specs/000-product/plan.md
+          specs/000-product/tasks.md
+          specs/000-product/gates.md
+      max_context_bytes:
+        description: Maximum bytes of repository context files sent to the reviewer prompt.
+        required: false
+        type: string
+        default: "120000"
+      approve_when_clean:
+        description: Submit an approving review when no blocking issue is found. Requires repository settings to allow GitHub Actions approvals.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      PROMPT_PATH: ${{ inputs.prompt_path }}
+      REPO: ${{ github.repository }}
+      HERMES_REVIEW_MODEL: ${{ inputs.model }}
+      HERMES_PYTHON: ${{ inputs.hermes_python }}
+      HERMES_AGENT_PATH: ${{ inputs.hermes_agent_path }}
+      MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+      CONTEXT_PATHS: ${{ inputs.context_paths }}
+      MAX_CONTEXT_BYTES: ${{ inputs.max_context_bytes }}
+      APPROVE_WHEN_CLEAN: ${{ inputs.approve_when_clean }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout PR head
+        shell: bash
+        run: gh pr checkout "$PR_NUMBER" --repo "$REPO" --detach
+
+      - name: Build review context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/hermes-review
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json number,baseRefName,headRefOid,title,body,author,url,files \
+            > /tmp/hermes-review/pr.json
+
+          gh pr diff "$PR_NUMBER" --repo "$REPO" > /tmp/hermes-review/pr.diff
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          max_bytes = int(os.environ["MAX_DIFF_BYTES"])
+          diff_path = Path("/tmp/hermes-review/pr.diff")
+          data = diff_path.read_bytes()
+          if len(data) > max_bytes:
+              diff_path.write_bytes(
+                  data[:max_bytes]
+                  + b"\n\n[DIFF TRUNCATED BY HERMES REVIEW WORKFLOW]\n"
+              )
+          PY
+
+          cat > /tmp/hermes-review/default-prompt.md <<'PROMPT_EOF'
+          You are a senior software engineer reviewing this pull request.
+
+          Review priorities:
+
+          1. Correctness bugs, regressions, data loss, security issues, and operational risk.
+          2. Missing or weak tests for changed behavior.
+          3. Violations of repository instructions such as AGENTS.md, CLAUDE.md, specs, or design docs.
+          4. Avoidable complexity, duplication, or unclear intent.
+
+          Do not request changes for style issues that formatters or linters would catch.
+          Do not review unchanged code unless it is necessary to explain a changed-code bug.
+          Use REQUEST_CHANGES only for blocking issues. If there are no blocking issues, APPROVE.
+          PROMPT_EOF
+
+          if [ -f "$PROMPT_PATH" ]; then
+            cp "$PROMPT_PATH" /tmp/hermes-review/repo-prompt.md
+          elif [ -f ".github/zai-review-prompt.md" ]; then
+            cp .github/zai-review-prompt.md /tmp/hermes-review/repo-prompt.md
+          else
+            cp /tmp/hermes-review/default-prompt.md /tmp/hermes-review/repo-prompt.md
+          fi
+
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          max_bytes = int(os.environ["MAX_CONTEXT_BYTES"])
+          raw_paths = os.environ.get("CONTEXT_PATHS", "")
+          candidates = [
+              item.strip()
+              for item in re.split(r"[\n,]+", raw_paths)
+              if item.strip()
+          ]
+
+          output = []
+          used = 0
+          root = Path.cwd().resolve()
+
+          for candidate in candidates:
+              rel = Path(candidate)
+              if rel.is_absolute() or ".." in rel.parts:
+                  continue
+              path = (root / rel).resolve()
+              if not str(path).startswith(str(root) + os.sep):
+                  continue
+              if not path.is_file():
+                  continue
+              tracked = subprocess.run(
+                  ["git", "ls-files", "--error-unmatch", candidate],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+              )
+              if tracked.returncode != 0:
+                  continue
+              data = path.read_bytes()
+              remaining = max_bytes - used
+              if remaining <= 0:
+                  break
+              truncated = len(data) > remaining
+              chunk = data[:remaining].decode("utf-8", errors="replace")
+              output.append(f"## {candidate}\n\n```text\n{chunk}\n```")
+              if truncated:
+                  output.append(f"\n[CONTEXT TRUNCATED AFTER {used + remaining} BYTES]\n")
+                  used = max_bytes
+                  break
+              used += len(data)
+
+          context = "\n\n".join(output).strip()
+          if not context:
+              context = "(No configured repository context files were found.)"
+          Path("/tmp/hermes-review/context.md").write_text(context)
+          PY
+
+      - name: Run Hermes-backed review
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$HERMES_PYTHON" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, os.environ["HERMES_AGENT_PATH"])
+
+          from hermes_cli.auth import resolve_codex_runtime_credentials
+          from openai import OpenAI
+
+          work = Path("/tmp/hermes-review")
+          pr = json.loads((work / "pr.json").read_text())
+          repo_prompt = (work / "repo-prompt.md").read_text()
+          repo_context = (work / "context.md").read_text()
+          diff = (work / "pr.diff").read_text(errors="replace")
+
+          repo = os.environ["REPO"]
+          pr_number = os.environ["PR_NUMBER"]
+          model = os.environ["HERMES_REVIEW_MODEL"]
+          head_sha = pr["headRefOid"]
+          marker = f"<!-- hermes-codex-review head_sha={head_sha} -->"
+
+          files = pr.get("files") or []
+          file_lines = []
+          for item in files:
+              path = item.get("path")
+              additions = item.get("additions")
+              deletions = item.get("deletions")
+              if path:
+                  file_lines.append(f"- {path} (+{additions}, -{deletions})")
+
+          prompt = f"""
+          ## Review target
+
+          - Repository: {repo}
+          - PR number: {pr_number}
+          - PR URL: {pr["url"]}
+          - Title: {pr["title"]}
+          - Author: {(pr.get("author") or {}).get("login", "unknown")}
+          - Base ref: {pr["baseRefName"]}
+          - Head SHA: {head_sha}
+
+          ## PR body
+
+          {pr.get("body") or "(empty)"}
+
+          ## Changed files
+
+          {chr(10).join(file_lines) or "(none)"}
+
+          ## Repository review prompt
+
+          {repo_prompt}
+
+          ## Repository context files
+
+          {repo_context}
+
+          ## Diff
+
+          ```diff
+          {diff}
+          ```
+
+          ## Required output
+
+          Write a GitHub pull request review body only. Do not wrap it in a code block.
+          The first line must be exactly:
+          {marker}
+
+          The second line must be exactly one of:
+          APPROVE
+          REQUEST_CHANGES
+
+          Use REQUEST_CHANGES only for blocking correctness, security, data-loss,
+          operational, or test-coverage issues. Otherwise use APPROVE.
+          Include concise findings with file/line references when possible.
+          """
+
+          creds = resolve_codex_runtime_credentials()
+          token = creds.get("api_key")
+          if not token:
+              raise RuntimeError("Hermes OpenAI Codex credentials are not available")
+
+          client = OpenAI(
+              api_key=token,
+              base_url="https://chatgpt.com/backend-api/codex",
+          )
+
+          chunks = []
+          # The current Hermes/OpenAI SDK stack can raise TypeError after the
+          # final text event when Codex sends response.output=null. Accumulate
+          # text deltas ourselves and treat that late parser failure as benign.
+          try:
+              with client.responses.stream(
+                  model=model,
+                  instructions="You are Hermes reviewing a GitHub pull request. Produce only the requested review body.",
+                  input=[{"role": "user", "content": prompt}],
+                  store=False,
+                  reasoning={"effort": "medium", "summary": "auto"},
+                  include=["reasoning.encrypted_content"],
+                  extra_headers={
+                      "session_id": f"github-pr-review-{repo}-{pr_number}-{head_sha[:12]}",
+                      "x-client-request-id": f"github-pr-review-{repo}-{pr_number}-{head_sha[:12]}",
+                  },
+              ) as stream:
+                  for event in stream:
+                      if getattr(event, "type", None) == "response.output_text.delta":
+                          chunks.append(getattr(event, "delta", "") or "")
+          except TypeError as exc:
+              if "'NoneType' object is not iterable" not in str(exc) or not chunks:
+                  raise
+
+          body = "".join(chunks).strip()
+          if not body:
+              raise RuntimeError("Hermes review produced an empty body")
+
+          body = re.sub(r"^<!--\s*zai-glm-review\b[^>]*-->", marker, body)
+          lines = body.splitlines()
+          if not lines or lines[0].strip() != marker:
+              body = marker + "\n" + body
+              lines = body.splitlines()
+
+          verdict = "APPROVE"
+          for line in lines[1:6]:
+              text = line.strip().upper()
+              if text in {"APPROVE", "REQUEST_CHANGES"}:
+                  verdict = text
+                  break
+
+          if len(lines) == 1 or lines[1].strip().upper() not in {"APPROVE", "REQUEST_CHANGES"}:
+              body = lines[0] + "\n" + verdict + "\n" + "\n".join(lines[1:]).lstrip()
+
+          body = body.replace("Reviewed by Z.ai GLM via Claude Code Action", "Reviewed by Hermes via OpenAI Codex")
+          if "Reviewed by Hermes via OpenAI Codex" not in body:
+              body = body.rstrip() + "\n\n<sub>Reviewed by Hermes via OpenAI Codex</sub>\n"
+
+          (work / "review.md").write_text(body)
+          (work / "verdict.txt").write_text(verdict + "\n")
+          PY
+
+      - name: Submit PR review
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          verdict="$(tr -d '\r\n' < /tmp/hermes-review/verdict.txt)"
+          if [ "$verdict" = "REQUEST_CHANGES" ]; then
+            gh pr review "$PR_NUMBER" --repo "$REPO" --request-changes --body-file /tmp/hermes-review/review.md
+          elif [ "$APPROVE_WHEN_CLEAN" = "true" ]; then
+            gh pr review "$PR_NUMBER" --repo "$REPO" --approve --body-file /tmp/hermes-review/review.md
+          else
+            gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file /tmp/hermes-review/review.md
+          fi
