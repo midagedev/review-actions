@@ -32,6 +32,11 @@ The default runner labels are:
 runner_labels: '["self-hosted","vps-hermes"]'
 ```
 
+By default, clean reviews are submitted as neutral PR review comments because
+many repositories block `GITHUB_TOKEN` from approving pull requests. Set
+`approve_when_clean: true` only after enabling GitHub Actions PR approvals for
+the caller repository.
+
 The runner must have the VPS Hermes installation available at:
 
 ```text

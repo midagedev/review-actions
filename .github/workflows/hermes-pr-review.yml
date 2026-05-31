@@ -37,6 +37,11 @@ on:
         required: false
         type: string
         default: "180000"
+      approve_when_clean:
+        description: Submit an approving review when no blocking issue is found. Requires repository settings to allow GitHub Actions approvals.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +60,7 @@ jobs:
       HERMES_PYTHON: ${{ inputs.hermes_python }}
       HERMES_AGENT_PATH: ${{ inputs.hermes_agent_path }}
       MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+      APPROVE_WHEN_CLEAN: ${{ inputs.approve_when_clean }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -264,6 +270,8 @@ jobs:
           verdict="$(tr -d '\r\n' < /tmp/hermes-review/verdict.txt)"
           if [ "$verdict" = "REQUEST_CHANGES" ]; then
             gh pr review "$PR_NUMBER" --repo "$REPO" --request-changes --body-file /tmp/hermes-review/review.md
-          else
+          elif [ "$APPROVE_WHEN_CLEAN" = "true" ]; then
             gh pr review "$PR_NUMBER" --repo "$REPO" --approve --body-file /tmp/hermes-review/review.md
+          else
+            gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file /tmp/hermes-review/review.md
           fi
