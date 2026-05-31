@@ -5,6 +5,49 @@ Reusable GitHub Actions for AI-assisted pull request review.
 The first workflow is a Z.ai-backed PR reviewer built around
 `anthropics/claude-code-action`.
 
+The Hermes workflow is a self-hosted-runner reviewer for the VPS Hermes/Codex
+installation. It uses the caller repository's self-hosted runner context, so
+register a runner on each pilot repository or move the runner to an organization
+runner group when rolling out broadly.
+
+## Hermes PR Review
+
+Caller repositories should add a small workflow that calls:
+
+```yaml
+uses: midagedev/review-actions/.github/workflows/hermes-pr-review.yml@main
+```
+
+Recommended caller permissions:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+```
+
+The default runner labels are:
+
+```yaml
+runner_labels: '["self-hosted","vps-hermes"]'
+```
+
+The runner must have the VPS Hermes installation available at:
+
+```text
+/home/midagedev/.hermes/hermes-agent
+```
+
+Use `examples/hermes-review.yml` as the caller workflow. Optionally add a
+repository-specific prompt at:
+
+```text
+.github/hermes-review-prompt.md
+```
+
+If that file is absent, the reusable workflow falls back to the legacy
+`.github/zai-review-prompt.md` prompt to ease migration.
+
 ## Z.ai PR Review
 
 Caller repositories should add a small workflow that calls:
