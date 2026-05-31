@@ -83,7 +83,6 @@ jobs:
       CONTEXT_PATHS: ${{ inputs.context_paths }}
       MAX_CONTEXT_BYTES: ${{ inputs.max_context_bytes }}
       APPROVE_WHEN_CLEAN: ${{ inputs.approve_when_clean }}
-      HERMES_REVIEW_DIR: ${{ runner.temp }}/hermes-review-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,6 +96,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          review_dir="${RUNNER_TEMP:-/tmp}/hermes-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "HERMES_REVIEW_DIR=$review_dir" >> "$GITHUB_ENV"
+          export HERMES_REVIEW_DIR="$review_dir"
 
           rm -rf "$HERMES_REVIEW_DIR"
           mkdir -p "$HERMES_REVIEW_DIR"
