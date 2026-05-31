@@ -53,6 +53,24 @@ repository-specific prompt at:
 If that file is absent, the reusable workflow falls back to the legacy
 `.github/zai-review-prompt.md` prompt to ease migration.
 
+The workflow also bundles configured repository context files into the model
+prompt when they exist. The default list covers common agent instructions and
+Billtap-style product/spec files:
+
+```yaml
+context_paths: |
+  AGENTS.md
+  CLAUDE.md
+  README.md
+  .specify/memory/constitution.md
+  docs/FINAL_GOAL.md
+  docs/AGENT_ORCHESTRATION.md
+  specs/000-product/spec.md
+  specs/000-product/plan.md
+  specs/000-product/tasks.md
+  specs/000-product/gates.md
+```
+
 ## Z.ai PR Review
 
 Caller repositories should add a small workflow that calls:
