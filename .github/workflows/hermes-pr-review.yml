@@ -83,6 +83,7 @@ jobs:
       CONTEXT_PATHS: ${{ inputs.context_paths }}
       MAX_CONTEXT_BYTES: ${{ inputs.max_context_bytes }}
       APPROVE_WHEN_CLEAN: ${{ inputs.approve_when_clean }}
+      HERMES_REVIEW_DIR: ${{ runner.temp }}/hermes-review-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,19 +98,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p /tmp/hermes-review
+          rm -rf "$HERMES_REVIEW_DIR"
+          mkdir -p "$HERMES_REVIEW_DIR"
           gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json number,baseRefName,headRefOid,title,body,author,url,files \
-            > /tmp/hermes-review/pr.json
+            > "$HERMES_REVIEW_DIR/pr.json"
 
-          gh pr diff "$PR_NUMBER" --repo "$REPO" > /tmp/hermes-review/pr.diff
+          gh pr diff "$PR_NUMBER" --repo "$REPO" > "$HERMES_REVIEW_DIR/pr.diff"
 
           python3 - <<'PY'
           import os
           from pathlib import Path
 
           max_bytes = int(os.environ["MAX_DIFF_BYTES"])
-          diff_path = Path("/tmp/hermes-review/pr.diff")
+          diff_path = Path(os.environ["HERMES_REVIEW_DIR"]) / "pr.diff"
           data = diff_path.read_bytes()
           if len(data) > max_bytes:
               diff_path.write_bytes(
@@ -118,7 +120,7 @@ jobs:
               )
           PY
 
-          cat > /tmp/hermes-review/default-prompt.md <<'PROMPT_EOF'
+          cat > "$HERMES_REVIEW_DIR/default-prompt.md" <<'PROMPT_EOF'
           You are a senior software engineer reviewing this pull request.
 
           Review priorities:
@@ -134,11 +136,11 @@ jobs:
           PROMPT_EOF
 
           if [ -f "$PROMPT_PATH" ]; then
-            cp "$PROMPT_PATH" /tmp/hermes-review/repo-prompt.md
+            cp "$PROMPT_PATH" "$HERMES_REVIEW_DIR/repo-prompt.md"
           elif [ -f ".github/zai-review-prompt.md" ]; then
-            cp .github/zai-review-prompt.md /tmp/hermes-review/repo-prompt.md
+            cp .github/zai-review-prompt.md "$HERMES_REVIEW_DIR/repo-prompt.md"
           else
-            cp /tmp/hermes-review/default-prompt.md /tmp/hermes-review/repo-prompt.md
+            cp "$HERMES_REVIEW_DIR/default-prompt.md" "$HERMES_REVIEW_DIR/repo-prompt.md"
           fi
 
           python3 - <<'PY'
@@ -192,7 +194,7 @@ jobs:
           context = "\n\n".join(output).strip()
           if not context:
               context = "(No configured repository context files were found.)"
-          Path("/tmp/hermes-review/context.md").write_text(context)
+          Path(os.environ["HERMES_REVIEW_DIR"]).joinpath("context.md").write_text(context)
           PY
 
       - name: Run Hermes-backed review
@@ -212,7 +214,7 @@ jobs:
           from hermes_cli.auth import resolve_codex_runtime_credentials
           from openai import OpenAI
 
-          work = Path("/tmp/hermes-review")
+          work = Path(os.environ["HERMES_REVIEW_DIR"])
           pr = json.loads((work / "pr.json").read_text())
           repo_prompt = (work / "repo-prompt.md").read_text()
           repo_context = (work / "context.md").read_text()
@@ -348,11 +350,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          verdict="$(tr -d '\r\n' < /tmp/hermes-review/verdict.txt)"
+          verdict="$(tr -d '\r\n' < "$HERMES_REVIEW_DIR/verdict.txt")"
           if [ "$verdict" = "REQUEST_CHANGES" ]; then
-            gh pr review "$PR_NUMBER" --repo "$REPO" --request-changes --body-file /tmp/hermes-review/review.md
+            gh pr review "$PR_NUMBER" --repo "$REPO" --request-changes --body-file "$HERMES_REVIEW_DIR/review.md"
           elif [ "$APPROVE_WHEN_CLEAN" = "true" ]; then
-            gh pr review "$PR_NUMBER" --repo "$REPO" --approve --body-file /tmp/hermes-review/review.md
+            gh pr review "$PR_NUMBER" --repo "$REPO" --approve --body-file "$HERMES_REVIEW_DIR/review.md"
           else
-            gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file /tmp/hermes-review/review.md
+            gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$HERMES_REVIEW_DIR/review.md"
           fi
