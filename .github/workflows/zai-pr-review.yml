@@ -42,6 +42,11 @@ on:
         required: false
         type: boolean
         default: false
+      allowed_pr_author:
+        description: GitHub login allowed to receive automatic Hermes reviews.
+        required: false
+        type: string
+        default: ""
     secrets:
       ZAI_API_KEY:
         required: false
@@ -52,9 +57,10 @@ permissions:
 
 jobs:
   review:
-    uses: midagedev/review-actions/.github/workflows/hermes-pr-review.yml@v5
+    uses: midagedev/review-actions/.github/workflows/hermes-pr-review.yml@v7
     with:
       pr_number: ${{ inputs.pr_number }}
       prompt_path: ${{ inputs.prompt_path }}
       runner_labels: ${{ inputs.runner_labels }}
       approve_when_clean: ${{ inputs.approve_when_clean }}
+      allowed_pr_author: ${{ inputs.allowed_pr_author }}

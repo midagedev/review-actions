@@ -62,6 +62,11 @@ on:
         required: false
         type: boolean
         default: false
+      allowed_pr_author:
+        description: GitHub login allowed to receive automatic Hermes reviews. Defaults to the repository owner when empty.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -83,16 +88,10 @@ jobs:
       CONTEXT_PATHS: ${{ inputs.context_paths }}
       MAX_CONTEXT_BYTES: ${{ inputs.max_context_bytes }}
       APPROVE_WHEN_CLEAN: ${{ inputs.approve_when_clean }}
+      ALLOWED_PR_AUTHOR: ${{ inputs.allowed_pr_author }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Checkout PR head
-        shell: bash
-        run: gh pr checkout "$PR_NUMBER" --repo "$REPO" --detach
-
-      - name: Build review context
+      - name: Prepare and validate PR
+        id: guard
         shell: bash
         run: |
           set -euo pipefail
@@ -106,6 +105,43 @@ jobs:
           gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json number,baseRefName,headRefOid,title,body,author,url,files \
             > "$HERMES_REVIEW_DIR/pr.json"
+
+          allowed_author="${ALLOWED_PR_AUTHOR:-$GITHUB_REPOSITORY_OWNER}"
+          pr_author="$(python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          pr = json.loads(Path(os.environ["HERMES_REVIEW_DIR"]).joinpath("pr.json").read_text())
+          print((pr.get("author") or {}).get("login", ""))
+          PY
+          )"
+
+          if [ "$pr_author" != "$allowed_author" ]; then
+            echo "HERMES_REVIEW_ALLOWED=false" >> "$GITHUB_ENV"
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Hermes review for PR #$PR_NUMBER by '$pr_author'; only '$allowed_author' is allowed."
+            exit 0
+          fi
+
+          echo "HERMES_REVIEW_ALLOWED=true" >> "$GITHUB_ENV"
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.allowed == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Checkout PR head
+        if: steps.guard.outputs.allowed == 'true'
+        shell: bash
+        run: gh pr checkout "$PR_NUMBER" --repo "$REPO" --detach
+
+      - name: Build review context
+        if: steps.guard.outputs.allowed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
 
           gh pr diff "$PR_NUMBER" --repo "$REPO" > "$HERMES_REVIEW_DIR/pr.diff"
 
@@ -201,6 +237,7 @@ jobs:
           PY
 
       - name: Run Hermes-backed review
+        if: steps.guard.outputs.allowed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -354,6 +391,7 @@ jobs:
           PY
 
       - name: Submit PR review
+        if: steps.guard.outputs.allowed == 'true'
         shell: bash
         run: |
           set -euo pipefail
